@@ -1,0 +1,8 @@
+{
+  "recommendations": [
+    "esbenp.prettier-vscode",   // Prettier
+    "dbaeumer.vscode-eslint",   // ESLint
+    "formulahendry.auto-rename-tag", // 태그 자동 이름 변경
+    "formulahendry.auto-close-tag"   // 태그 자동 닫기
+  ]
+}
