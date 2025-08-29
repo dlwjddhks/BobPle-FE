@@ -52,8 +52,8 @@ export const reviewAPI = {
 };
 /** 댓글 */
 export const commentAPI = {
-  getComments: async (eventId: number, page = 1, limit = 10) =>
-    apiRequest(`/api/events/${eventId}/comments?page=${page}&limit=${limit}`),
+  getEventComments: async (eventId: number | string) =>
+    apiRequest(`/api/events/${encodeURIComponent(eventId)}/comments`),
 
   createComment: async (eventId: number, content: string) =>
     apiRequest(`/api/events/${eventId}/comments`, {

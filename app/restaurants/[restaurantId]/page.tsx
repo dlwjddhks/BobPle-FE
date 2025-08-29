@@ -11,6 +11,7 @@ import {
   type Restaurant,
 } from "@/features/restaurants/restaurants.repository";
 
+// 폴백 데이터
 function buildMock(): Restaurant {
   return {
     id: 999999,
@@ -22,22 +23,26 @@ function buildMock(): Restaurant {
   };
 }
 
-// 숫자인지 판별
 const isNumeric = (v: string) => /^\d+$/.test(v || "");
 
 export default function RestaurantDetailPage() {
   const router = useRouter();
   const params = useParams();
-  const routeId = String(params?.id ?? ""); // ← 숫자/문자 모두 허용
+  const routeId = String(params?.restaurantId ?? "");
 
   const [data, setData] = useState<Restaurant | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [favorite, setFavorite] = useState(false);
 
+  // **URL 파라미터 로그**
+  useEffect(() => {
+    console.log("[LOG] URL 파라미터 routeId =", routeId);
+  }, [routeId]);
+
+  // 데이터 패치
   useEffect(() => {
     let canceled = false;
-
     (async () => {
       try {
         setLoading(true);
@@ -45,17 +50,17 @@ export default function RestaurantDetailPage() {
 
         let detail: Restaurant | null = null;
 
-        // 1) 숫자면 /:id 상세 시도
+        // 1) 숫자 id로 조회
         if (isNumeric(routeId)) {
           try {
-            detail = await restaurantsRepository.getRestaurant(routeId);
-          } catch {
-            detail = null;
+            detail = await restaurantsRepository.getRestaurant(Number(routeId));
+            console.log("[LOG] getRestaurant by id:", Number(routeId), detail);
+          } catch (e) {
+            console.log("[LOG] getRestaurant 실패, fallback to search:", e);
           }
         }
 
-        // 2) 숫자 상세가 실패했거나, routeId 자체가 문자열이면
-        //    검색(q=routeId) 결과의 첫 항목으로 대체(서버가 문자열 id를 안 받는 경우 대비)
+        // 2) 이름 검색 fallback
         if (!detail) {
           try {
             const list = await restaurantsRepository.getRestaurants({
@@ -64,29 +69,32 @@ export default function RestaurantDetailPage() {
               q: routeId,
             });
             detail = list.items?.[0] ?? null;
-          } catch {
-            detail = null;
+            console.log("[LOG] fallback 검색 결과:", routeId, list);
+          } catch (e) {
+            console.log("[LOG] fallback 검색 실패:", e);
           }
         }
 
         if (!canceled) {
           if (detail) {
             setData(detail);
+            console.log("[LOG] 최종 data 상태:", detail);
           } else {
             setErr("식당 정보를 불러오지 못했습니다.");
-            setData(buildMock()); // 최종 폴백
+            setData(buildMock());
+            console.log("[LOG] 최종 data 상태: mock 데이터로 대체");
           }
         }
       } catch (e: any) {
         if (!canceled) {
           setErr(e?.message || "식당 정보를 불러오지 못했습니다.");
           setData(buildMock());
+          console.log("[LOG] 에러 발생:", e);
         }
       } finally {
         if (!canceled) setLoading(false);
       }
     })();
-
     return () => {
       canceled = true;
     };
@@ -101,13 +109,22 @@ export default function RestaurantDetailPage() {
       ? "중식"
       : "기타";
 
+  // **생성 페이지로 이동할 때 로그**
   const goCreate = () => {
     if (!data) return;
     const qs = new URLSearchParams({
-      restaurant: data.name || "",
-      location: data.address || "",
-    }).toString();
-    router.push(`/create?${qs}`);
+      id: String(data.id ?? ""),
+      name: data.name ?? "",
+      address: data.address ?? "",
+    });
+    const target = `/create?${qs.toString()}`;
+    console.log("[LOG] 생성 페이지로 이동:", {
+      id: String(data.id ?? ""),
+      name: data.name ?? "",
+      address: data.address ?? "",
+      url: target,
+    });
+    router.push(target);
   };
 
   if (loading) {
@@ -117,6 +134,7 @@ export default function RestaurantDetailPage() {
       </div>
     );
   }
+
   if (!data) {
     return (
       <div className="min-h-screen flex items-center justify-center text-red-500">

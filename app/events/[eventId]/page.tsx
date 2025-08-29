@@ -1,19 +1,29 @@
+// app/events/[id]/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
+import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MapPin, Clock, Users, Trash2 } from "lucide-react";
 import { eventAPI, apiRequest } from "@/lib/api";
 
+/* ===== 상수 ===== */
+const DEFAULT_MAX = 4;
+
 /* ===== 타입 ===== */
 type Participant = { id?: number | string; nickname?: string; name?: string; avatar?: string | null };
-type CommentItem = { id: number | string; user: { id?: number | string; name: string; avatar?: string | null }; content: string; createdAt: string; };
+type CommentItem = {
+  id: number | string;
+  user: { id?: number | string; name: string; avatar?: string | null };
+  content: string;
+  createdAt: string;
+};
 type EventDetail = {
   id: number | string;
   title: string;
@@ -41,12 +51,19 @@ const toDateLabel = (iso?: string | null) => {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString("ko-KR", { month: "long", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleDateString("ko-KR", {
+    month: "long",
+    day: "numeric",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 };
 
-/** 식당 조회: 1) /restaurants/:id → 2) /restaurants?q=:id */
-async function fetchRestaurantById(restaurantId: number): Promise<{ name?: string | null; address?: string | null }> {
-  // 1) 상세 시도
+/** 식당 조회: 1) /restaurants/:id → 2) /restaurants?q=:id (둘 다 실패 시 null) */
+async function fetchRestaurantById(
+  restaurantId: number
+): Promise<{ name?: string | null; address?: string | null }> {
   try {
     const r = await apiRequest(`/api/restaurants/${restaurantId}`);
     const d = r?.data ?? r;
@@ -57,7 +74,6 @@ async function fetchRestaurantById(restaurantId: number): Promise<{ name?: strin
       };
     }
   } catch {}
-  // 2) 검색 시도
   try {
     const r = await apiRequest(`/api/restaurants?q=${encodeURIComponent(String(restaurantId))}`);
     const d = r?.data ?? r;
@@ -74,7 +90,7 @@ async function fetchRestaurantById(restaurantId: number): Promise<{ name?: strin
 }
 
 export default function EventDetailPage() {
-  // [id] / [eventId] 모두 대응
+  const router = useRouter();
   const params = useParams();
   const eventId = useMemo(() => {
     const v = (params as any)?.eventId ?? (params as any)?.id;
@@ -102,6 +118,7 @@ export default function EventDetailPage() {
   const [posting, setPosting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | number | null>(null);
   const [error, setError] = useState<string>("");
+  const [showApplyDialog, setShowApplyDialog] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -114,23 +131,50 @@ export default function EventDetailPage() {
         setLoading(true);
         setError("");
 
-        // 1) 이벤트 상세 (eventAPI.getEvent가 화면용으로 매핑되어 있다고 가정)
         const row: any = await eventAPI.getEvent(eventId as string);
         if (!row) throw new Error("이벤트를 찾을 수 없습니다.");
 
         const startHHMM = toHHMM(row.startISO);
         const endHHMM = toHHMM(row.endISO);
 
-        // 2) 식당 이름/주소 보강: 상세에 없으면 DB(REST)에서 조회
-        let location: string | null =
-          row.restaurantAddress ?? row.restaurantName ?? null;
-
+        // 장소/주소 보강
+        let location: string | null = row.restaurantAddress ?? row.restaurantName ?? null;
         if (!location && row.restaurantId) {
           const r = await fetchRestaurantById(Number(row.restaurantId));
           location = r.address ?? r.name ?? `식당 #${row.restaurantId}`;
         }
 
-        setDetail({
+        // 참가자 목록 매핑
+        const participants: Participant[] = Array.isArray(row.participants)
+          ? row.participants.map((p: any) => ({
+              id: p.id,
+              nickname: p.nickname,
+              name: p.nickname,
+              avatar: p.avatar ?? null,
+            }))
+          : [];
+
+        // 호스트 객체
+        const host = {
+          id: row.creatorId ?? undefined,
+          name: row.creatorNickname ?? "호스트",
+          avatar: null,
+        };
+
+        // 호스트를 참가자에 합치기(중복 방지)
+        const hasHost =
+          host.id != null &&
+          participants.some((p) => String(p.id ?? "") === String(host.id ?? ""));
+        const mergedParticipants = hasHost
+          ? participants
+          : [{ id: host.id, name: host.name, avatar: host.avatar }, ...participants];
+
+        // 표시용 현재 인원(서버 값이 있으면 사용, 없으면 merged 길이, 최소 1)
+        const displayCount =
+          row.participantsCount ??
+          Math.max(1, mergedParticipants.length);
+
+        const mapped: EventDetail = {
           id: row.id,
           title: row.title ?? "제목 없음",
           description: row.content ?? null,
@@ -140,23 +184,16 @@ export default function EventDetailPage() {
           startHHMM,
           endHHMM,
           location,
-          currentParticipants: row.participantsCount ?? null,
-          maxParticipants: row.maxParticipants ?? null,
-          host: { id: row.creatorId ?? undefined, name: row.creatorNickname ?? "호스트", avatar: null },
-          participants: Array.isArray(row.participants)
-            ? row.participants.map((p: any) => ({
-                id: p.id,
-                nickname: p.nickname,
-                name: p.nickname,
-                avatar: p.avatar ?? null,
-              }))
-            : [],
-        });
+          currentParticipants: displayCount,
+          maxParticipants: row.maxParticipants ?? DEFAULT_MAX,
+          host,
+          participants: mergedParticipants,
+        };
 
-        // 3) 댓글 (미구현이면 404 → 빈 목록)
-        await reloadComments(String(row.id));
+        setDetail(mapped);
+        await reloadComments(String(mapped.id));
       } catch (e: any) {
-        console.error("[EventDetail] load failed:", e);
+        console.error("[event:detail] load failed:", e);
         setError(e?.message || "상세를 불러오지 못했습니다.");
         setComments([]);
       } finally {
@@ -167,28 +204,25 @@ export default function EventDetailPage() {
 
   const dateLabel = useMemo(() => toDateLabel(detail.startISO), [detail.startISO]);
 
+  // ===== 댓글 (수정 X) =====
   async function reloadComments(idForComments: string) {
     try {
       const r: any = await apiRequest(`/api/events/${encodeURIComponent(idForComments)}/comments`);
-      const list: any[] = Array.isArray(r?.items) ? r.items : Array.isArray(r) ? r : [];
-      setComments(
-        list.map((c: any) => ({
-          id: c.id,
-          user: {
-            id: c.users?.id ?? c.user?.id ?? c.creator?.id ?? undefined,
-            name:
-              c.users?.nickname ??
-              c.user?.nickname ??
-              c.user?.name ??
-              c.creator?.nickname ??
-              "사용자",
-            avatar: c.users?.avatar ?? c.user?.avatar ?? null,
-          },
-          content: c.content ?? "",
-          createdAt: c.created_at ?? c.createdAt ?? new Date().toISOString(),
-        }))
-      );
-    } catch {
+      const rawList: any[] = Array.isArray(r?.items) ? r.items : Array.isArray(r) ? r : [];
+      const mapped: CommentItem[] = rawList.map((c: any) => ({
+        id: c.id,
+        user: {
+          id: c.users?.id ?? c.user?.id ?? c.creator?.id ?? undefined,
+          name:
+            c.users?.nickname ?? c.user?.nickname ?? c.user?.name ?? c.creator?.nickname ?? "사용자",
+          avatar: c.users?.avatar ?? c.user?.avatar ?? null,
+        },
+        content: c.content ?? "",
+        createdAt: c.created_at ?? c.createdAt ?? new Date().toISOString(),
+      }));
+      setComments(mapped);
+    } catch (e) {
+      console.error("[comments] load failed:", e);
       setComments([]);
     }
   }
@@ -201,7 +235,8 @@ export default function EventDetailPage() {
         method: "POST",
         body: JSON.stringify({ content: newComment.trim() }),
       });
-      const me = typeof window !== "undefined" ? JSON.parse(localStorage.getItem("user") || "null") : null;
+      const me =
+        typeof window !== "undefined" ? JSON.parse(localStorage.getItem("user") || "null") : null;
       setComments((prev) => [
         {
           id: r?.id ?? Date.now(),
@@ -224,9 +259,10 @@ export default function EventDetailPage() {
     if (!detail.id) return;
     setDeletingId(commentId);
     try {
-      await apiRequest(`/api/events/${encodeURIComponent(String(detail.id))}/comments/${commentId}`, {
-        method: "DELETE",
-      });
+      await apiRequest(
+        `/api/events/${encodeURIComponent(String(detail.id))}/comments/${commentId}`,
+        { method: "DELETE" }
+      );
       setComments((prev) => prev.filter((c) => c.id !== commentId));
     } catch (e) {
       console.error("[comments] delete failed:", e);
@@ -271,7 +307,7 @@ export default function EventDetailPage() {
               </div>
               <div className="flex items-center text-sm text-muted-foreground">
                 <Users className="w-4 h-4 mr-1" />
-                {detail.currentParticipants ?? 0}/{detail.maxParticipants ?? "-"}
+                {detail.currentParticipants ?? 1}/{detail.maxParticipants ?? DEFAULT_MAX}
               </div>
             </div>
           </CardHeader>
@@ -292,7 +328,39 @@ export default function EventDetailPage() {
               </div>
             )}
 
-            <Button className="w-full">참여하기</Button>
+            {/* 참여하기 → 확인 다이얼로그 (채팅 연결 그대로) */}
+            <Dialog open={showApplyDialog} onOpenChange={setShowApplyDialog}>
+              <DialogTrigger asChild>
+                <Button className="w-full" disabled={!detail.id}>참여하기</Button>
+              </DialogTrigger>
+
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>밥약 참여 신청</DialogTitle>
+                </DialogHeader>
+                <p className="text-sm text-muted-foreground mb-4">
+                  ‘{detail.title}’ 밥약에 참여하시겠습니까?
+                </p>
+                <div className="flex gap-3">
+                  <Button
+                    variant="outline"
+                    className="flex-1 h-10 bg-transparent"
+                    onClick={() => setShowApplyDialog(false)}
+                  >
+                    취소
+                  </Button>
+                  <Button
+                    className="flex-1 h-10"
+                    onClick={() => {
+                      setShowApplyDialog(false);
+                      router.push(`/chat/${detail.id}`);
+                    }}
+                  >
+                    참여하기
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
           </CardContent>
         </Card>
 
@@ -325,7 +393,7 @@ export default function EventDetailPage() {
           </CardContent>
         </Card>
 
-        {/* 댓글 */}
+        {/* 댓글(그대로) */}
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">댓글 ({comments.length}개)</CardTitle>

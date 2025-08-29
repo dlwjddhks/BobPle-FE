@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Search, MapPin, Clock, Star } from "lucide-react";
+import { ArrowLeft, Search, MapPin } from "lucide-react";
 import { restaurantsRepository, type Restaurant } from "@/features/restaurants/restaurants.repository";
 
 function buildMock(): Restaurant {
@@ -19,7 +19,6 @@ function buildMock(): Restaurant {
     is_sponsored: true,
   };
 }
-
 const koToServerCat = (k?: string) => {
   switch (k) {
     case "한식": return "KOREAN";
@@ -43,17 +42,16 @@ export default function RestaurantsPage() {
   const [serverList, setServerList] = useState<Restaurant[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [recommendedOnly, setRecommendedOnly] = useState(false);
 
+  const [recommendedOnly, setRecommendedOnly] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("전체");
   const categories = ["전체", "한식", "일식", "중식", "양식"];
 
   const [page, setPage] = useState(1);
-  const limit = 5;
+  const limit = 5; // BE 페이징 5개 고정
   const [hasNext, setHasNext] = useState(false);
 
-  // 필터/검색 바뀌면 1페이지로
   useEffect(() => { setPage(1); }, [recommendedOnly, selectedCategory, searchTerm]);
 
   useEffect(() => {
@@ -64,45 +62,33 @@ export default function RestaurantsPage() {
         setErr(null);
 
         const categoryCode = koToServerCat(selectedCategory);
-        let resp;
+        const params = {
+          page,
+          limit,
+          q: searchTerm.trim() || undefined,
+          sponsoredOnly: recommendedOnly ? 1 : 0,
+        } as const;
 
-        if (categoryCode) {
-          resp = await restaurantsRepository.collectByCategory({
-            page,
-            limit,
-            category: categoryCode,
-            q: searchTerm.trim() || undefined,
-            sponsoredOnly: recommendedOnly ? 1 : 0,
-            maxPages: 50,
-          });
-        } else {
-          resp = await restaurantsRepository.getRestaurants({
-            page,
-            limit,
-            q: searchTerm.trim() || undefined,
-            sponsoredOnly: recommendedOnly ? 1 : 0,
-          });
-        }
+        const resp = categoryCode
+          ? await restaurantsRepository.collectByCategory({
+              ...params,
+              category: categoryCode,
+              maxPages: 50,
+            })
+          : await restaurantsRepository.getRestaurants(params);
 
         if (canceled) return;
 
-        const list = resp.items ?? [];
+        console.log("[DEBUG][list] params =>", params, { categoryCode });
+        console.log("[DEBUG][list] raw response =>", resp);
 
-        // ✅ 정책
-        // - 첫 페이지 & 비어있음 → 목업 + 안내
-        // - 그 외(2페이지 이상 비어있음) → 목업 표시 X, 빈 상태 + 다음 비활성
-        if (list.length === 0) {
-          setHasNext(false);
-          if (page === 1) {
-            setErr("검색 결과가 비어 있어 목업 데이터를 보여드립니다.");
-            setServerList([buildMock()]);
-          } else {
-            setErr(null);           // 오류 아님
-            setServerList([]);      // 빈 상태
-          }
-        } else {
-          setServerList(list);
-          setHasNext(Boolean(resp.hasNext));
+        const list = resp.items ?? [];
+        setServerList(list);
+        setHasNext(Boolean(resp.hasNext));
+
+        if (list.length === 0 && page === 1) {
+          setErr("검색 결과가 비어 있어 목업 데이터를 보여드립니다.");
+          setServerList([buildMock()]);
         }
       } catch (e: any) {
         if (!canceled) {
@@ -119,15 +105,12 @@ export default function RestaurantsPage() {
 
   const viewList = useMemo(() => {
     return serverList.map((r) => ({
-      id: r.id,
+      id: r.id, // ✅ 상세 라우팅용 숫자 id
       name: r.name,
       category: serverToKoCat(r.category),
       location: r.address,
       phone: r.telephone ?? undefined,
       isRecommended: !!r.is_sponsored,
-      rating: undefined as number | undefined,
-      reviewCount: undefined as number | undefined,
-      openHours: undefined as string | undefined,
     }));
   }, [serverList]);
 
@@ -157,7 +140,7 @@ export default function RestaurantsPage() {
         {/* 검색 */}
         <div className="mb-6">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground w-4 h-4" />
             <Input
               placeholder="식당 이름, 음식 종류, 지역으로 검색..."
               value={searchTerm}
@@ -185,47 +168,41 @@ export default function RestaurantsPage() {
           </div>
         </div>
 
-        {/* 에러(실패/초기비어있음) 배너 */}
+        {/* 에러 */}
         {err && (
           <div className="mb-4 p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md">
             {err}
           </div>
         )}
-
         {loading && <div className="text-sm text-muted-foreground">불러오는 중...</div>}
 
+        {/* 목록 */}
         <div className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
             {viewList.map((restaurant) => (
               <Card
                 key={restaurant.id}
                 className="cursor-pointer hover:shadow-lg transition-shadow"
+                // ✅ 상세는 반드시 숫자 id로 이동
                 onClick={() => router.push(`/restaurants/${restaurant.id}`)}
               >
-                {restaurant.isRecommended && (
-                  <div className="p-2">
-                    <Badge className="inline-block">추천</Badge>
-                  </div>
-                )}
                 <CardContent className="p-4">
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex-1">
-                      <h3 className="font-semibold text-lg mb-1">{restaurant.name}</h3>
+                      {/* 이름 옆 추천 뱃지 */}
+                      <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
+                        {restaurant.name}
+                        {restaurant.isRecommended && (
+                          <Badge className="text-[11px] px-2 py-0.5">추천</Badge>
+                        )}
+                      </h3>
+
                       <div className="flex items-center space-x-2 text-sm text-muted-foreground mb-2">
                         <Badge variant="outline" className="text-xs">
                           {restaurant.category}
                         </Badge>
                       </div>
                     </div>
-                    {restaurant.rating && (
-                      <div className="flex items-center space-x-1">
-                        <Star className="w-4 h-4 fill-current" />
-                        <span className="font-medium">{restaurant.rating}</span>
-                        {restaurant.reviewCount && (
-                          <span className="text-sm text-muted-foreground">({restaurant.reviewCount})</span>
-                        )}
-                      </div>
-                    )}
                   </div>
 
                   <div className="flex items-center space-x-4 text-sm text-muted-foreground mb-3">
@@ -233,19 +210,12 @@ export default function RestaurantsPage() {
                       <MapPin className="w-3 h-3 mr-1" />
                       {restaurant.location}
                     </div>
-                    {restaurant.openHours && (
-                      <div className="flex items-center">
-                        <Clock className="w-3 h-3 mr-1" />
-                        {restaurant.openHours}
-                      </div>
-                    )}
                   </div>
                 </CardContent>
               </Card>
             ))}
           </div>
 
-          {/* 빈 페이지(2p+) 메시지 */}
           {!loading && !err && viewList.length === 0 && (
             <div className="text-center py-12">
               <p className="text-muted-foreground text-lg">이 페이지에는 더 이상 결과가 없어요.</p>

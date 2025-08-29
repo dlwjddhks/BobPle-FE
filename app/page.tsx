@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { MapPin, Clock, Users, Plus, MessageCircle, Search } from "lucide-react";
 import { eventAPI, apiRequest } from "@/lib/api";
 
-/* ================= 유틸 ================= */
+/* ===================== utils ===================== */
 const toHHMM = (iso?: string | null) => {
   if (!iso) return null;
   const d = new Date(iso);
@@ -25,15 +25,19 @@ const toDateLabel = (iso?: string | null) => {
   return d.toLocaleDateString("ko-KR", { month: "short", day: "numeric" });
 };
 
-/** (옵션) 식당 임시 매핑 */
+// 서버가 식당 이름을 안 줄 때 임시 폴백
 const RESTAURANT_NAME_BY_ID: Record<number, string> = {
   1: "부산 예가네 24가 스토어",
 };
 
-/** 404 폭탄 막고 싶으면 false 로 두세요 (지금 BE에 /api/users/:id, /api/restaurants/:id 없으면 404 나옴) */
-const ENRICH_VIA_API = false;
+// 표시용 최대 인원(서버 값이 없을 때 기본)
+const DEFAULT_MAX = 4;
 
-/* ================= 타입 ================= */
+// 개별 조회 보강할지 여부
+const ENRICH_VIA_API = true;
+const DEBUG_EVENTS = false;
+
+/* ===================== types ===================== */
 type EventHost = {
   id?: number | string;
   name: string;
@@ -45,41 +49,35 @@ type EventItem = {
   title: string;
   description?: string | null;
 
-  // 시간
   startISO?: string | null;
   endISO?: string | null;
   dateLabel?: string | null;
   startHHMM?: string | null;
   endHHMM?: string | null;
 
-  // 장소(식당)
   restaurantId?: number | null;
   restaurantName?: string | null;
 
-  // 인원
-  currentParticipants?: number | null;
-  maxParticipants?: number | null;
+  currentParticipants?: number | null; // 서버가 주면 사용
+  maxParticipants?: number | null;     // 서버가 주면 사용
 
-  // 호스트
   creatorId?: number | null;
   host: EventHost;
 };
 
-/** 원본 이벤트 → 화면용 1차 매핑 (닉네임/ID 경로 보강 + 디버그 로그) */
 function mapEventFromApi(e: any): EventItem {
-  const startISO = e?.start_at ?? e?.startAt ?? e?.startDateTime ?? null;
-  const endISO   = e?.end_at   ?? e?.endAt   ?? e?.endDateTime   ?? null;
+  const startISO = e?.startAt ?? e?.start_at ?? e?.startDateTime ?? null;
+  const endISO   = e?.endAt   ?? e?.end_at   ?? e?.endDateTime   ?? null;
 
-  // 다양한 키 후보에서 creatorId 추출
+  const creatorIdRaw =
+    e?.creator?.id ?? e?.creator_id ?? e?.creatorId ?? e?.user_id ?? e?.userId ?? null;
   const creatorId =
-    e?.creator?.id ??
-    e?.creator_id ??
-    e?.creatorId ??
-    e?.user_id ??
-    e?.userId ??
-    null;
+    typeof creatorIdRaw === "number"
+      ? creatorIdRaw
+      : Number.isFinite(Number(creatorIdRaw))
+      ? Number(creatorIdRaw)
+      : null;
 
-  // 다양한 키 후보에서 닉네임 추출
   const creatorNickname =
     e?.creator?.nickname ??
     e?.creatorNickname ??
@@ -91,16 +89,16 @@ function mapEventFromApi(e: any): EventItem {
     e?.ownerName ??
     null;
 
-  // 식당 이름 후보
-  const restaurantName =
-    e?.restaurant?.name ??
-    e?.restaurantName ??
-    e?.placeName ??
-    null;
+  const restaurantIdRaw = e?.restaurant?.id ?? e?.restaurant_id ?? e?.restaurantId ?? null;
+  const restaurantId =
+    typeof restaurantIdRaw === "number"
+      ? restaurantIdRaw
+      : Number.isFinite(Number(restaurantIdRaw))
+      ? Number(restaurantIdRaw)
+      : null;
 
-  // ---- 디버그: 원본 1건 요약 출력
-  // (목록마다 너무 길면 아래 groupCollapsed만 유지해도 OK)
-  console.debug("[events:list] raw item =", e);
+  const restaurantName =
+    e?.restaurant?.name ?? e?.restaurant_name ?? e?.restaurantName ?? e?.placeName ?? null;
 
   return {
     id: e?.id ?? e?.eventId ?? String(Math.random()),
@@ -113,30 +111,29 @@ function mapEventFromApi(e: any): EventItem {
     startHHMM: toHHMM(startISO),
     endHHMM: toHHMM(endISO),
 
-    restaurantId: e?.restaurant_id ?? e?.restaurantId ?? null,
+    restaurantId,
     restaurantName,
 
+    // 서버에 참가자 수가 있으면 그대로 사용
     currentParticipants:
-      e?.participants_count ??
-      e?.participantsCount ??
-      (Array.isArray(e?.participants) ? e.participants.length : null),
-    maxParticipants: e?.max_participants ?? e?.maxParticipants ?? null,
+      e?.participantsCount ?? e?.participants_count ?? null,
+    maxParticipants: e?.maxParticipants ?? e?.max_participants ?? null,
 
     creatorId,
     host: {
       id: creatorId ?? undefined,
-      name: creatorNickname ?? "호스트", // ← 응답에 닉네임이 있으면 여기서 바로 씀
-      avatar: e?.creator?.avatar ?? e?.host?.avatar ?? null,
-      rating: e?.host?.rating ?? null,
+      name: creatorNickname ?? "호스트",
+      avatar: e?.creator?.avatar ?? null,
+      rating: null,
     },
   };
 }
 
-/* ================= 캐시 ================= */
+/* ===================== caches ===================== */
 const nickCache = new Map<number, string>();
-const restCache = new Map<number, string>();
+const restCache = new Map<number, string>(); // restaurantId → name
 
-/* ================= 페이지 ================= */
+/* ===================== page ===================== */
 export default function HomePage() {
   const router = useRouter();
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -157,6 +154,7 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 검색 디바운스
   useEffect(() => {
     if (!isLoggedIn) return;
     const t = setTimeout(() => void loadEvents(searchTerm), 300);
@@ -169,120 +167,88 @@ export default function HomePage() {
       setError("");
       const { items } = await eventAPI.getEvents({ search: q, page: 1, size: 20 });
 
-      // ===== 디버그: 원본 목록 요약 출력 =====
-      console.groupCollapsed("%c[events:list] server raw items", "color:#888");
-      console.table((items ?? []).map((x: any) => ({
-        id: x?.id,
-        title: x?.title,
-        creatorId: x?.creator?.id ?? x?.creator_id ?? x?.creatorId ?? x?.user_id ?? x?.userId,
-        nickname:
-          x?.creator?.nickname ??
-          x?.creatorNickname ??
-          x?.creator_name ??
-          x?.nickname ??
-          x?.user?.nickname ??
-          x?.writer?.nickname ??
-          x?.hostName ??
-          x?.ownerName,
-        restaurantId: x?.restaurant_id ?? x?.restaurantId,
-        restaurantName: x?.restaurant?.name ?? x?.restaurantName ?? x?.placeName,
-        startAt: x?.start_at ?? x?.startAt ?? x?.startDateTime,
-        endAt:   x?.end_at   ?? x?.endAt   ?? x?.endDateTime,
-      })));
-      console.groupEnd();
-
-      // 1) 1차 매핑
       const base: EventItem[] = (items || []).map(mapEventFromApi);
 
-      // ===== 디버그: 1차 매핑 결과 요약 =====
-      console.groupCollapsed("%c[events:list] mapped (step1)", "color:#06f");
-      console.table(base.map((x) => ({
-        id: x.id,
-        title: x.title,
-        creatorId: x.creatorId,
-        hostName: x.host.name,
-        restaurantId: x.restaurantId,
-        restaurantName: x.restaurantName,
-        startISO: x.startISO,
-        endISO: x.endISO,
-      })));
-      console.groupEnd();
-
-      // 2) (옵션) 보강용 id 수집
+      // 개별 API 보강(선택)
       const userIds = Array.from(
-        new Set(base.map((b) => Number(b.creatorId)).filter((id) => Number.isFinite(id)))
-      ) as number[];
+        new Set(
+          (base.map(b => b.creatorId) as Array<number | null | undefined>)
+            .filter((v): v is number => typeof v === "number" && Number.isInteger(v) && v > 0)
+        )
+      );
       const restIds = Array.from(
-        new Set(base.map((b) => Number(b.restaurantId)).filter((id) => Number.isFinite(id)))
-      ) as number[];
+        new Set(
+          (base.map(b => b.restaurantId) as Array<number | null | undefined>)
+            .filter((v): v is number => typeof v === "number" && Number.isInteger(v) && v > 0)
+        )
+      );
 
       if (ENRICH_VIA_API) {
-        // 3) (옵션) 병렬 조회
         await Promise.allSettled([
-          // 사용자 닉네임
-          ...userIds
-            .filter((id) => !nickCache.has(id))
-            .map(async (id) => {
-              try {
-                const u = await apiRequest(`/api/users/${id}`);
-                const name = u?.nickname ?? u?.name ?? u?.data?.nickname ?? u?.data?.name ?? null;
-                if (name) nickCache.set(id, name);
-              } catch {}
-            }),
-
-          // 식당 이름
-          ...restIds
-            .filter((id) => !restCache.has(id))
-            .map(async (id) => {
-              try {
-                const r = await apiRequest(`/api/restaurants/${id}`);
-                const name = r?.name ?? r?.title ?? r?.data?.name ?? r?.data?.title ?? null;
-                if (name) {
-                  restCache.set(id, name);
-                } else if (RESTAURANT_NAME_BY_ID[id]) {
-                  restCache.set(id, RESTAURANT_NAME_BY_ID[id]);
-                }
-              } catch {
-                if (RESTAURANT_NAME_BY_ID[id]) restCache.set(id, RESTAURANT_NAME_BY_ID[id]);
-              }
-            }),
+          ...userIds.filter(id => !nickCache.has(id)).map(async id => {
+            try {
+              const u = await apiRequest(`/api/users/${id}`);
+              const name = u?.nickname ?? u?.name ?? u?.data?.nickname ?? u?.data?.name ?? null;
+              if (name) nickCache.set(id, name);
+            } catch {}
+          }),
+          ...restIds.filter(id => !restCache.has(id)).map(async id => {
+            try {
+              const r = await apiRequest(`/api/restaurants/${id}`);
+              const name = r?.name ?? r?.title ?? r?.data?.name ?? r?.data?.title ?? null;
+              if (name) restCache.set(id, name);
+              else if (RESTAURANT_NAME_BY_ID[id]) restCache.set(id, RESTAURANT_NAME_BY_ID[id]);
+            } catch {
+              if (RESTAURANT_NAME_BY_ID[id]) restCache.set(id, RESTAURANT_NAME_BY_ID[id]);
+            }
+          }),
         ]);
       }
 
-      // 4) 최종 병합
-      const withLabels: EventItem[] = base.map((ev) => {
+      // 최종 병합 + “호스트는 최소 1명” 규칙
+      const merged: EventItem[] = base.map(ev => {
         const creatorName =
-          ev.host.name && ev.host.name !== "호스트"
+          (ev.host.name && ev.host.name !== "호스트"
             ? ev.host.name
-            : (Number.isFinite(Number(ev.creatorId)) ? nickCache.get(Number(ev.creatorId!)) : null) ?? "호스트";
+            : (typeof ev.creatorId === "number" ? nickCache.get(ev.creatorId) : undefined)) ?? "호스트";
 
         const restaurantName =
           ev.restaurantName ??
-          (Number.isFinite(Number(ev.restaurantId)) ? restCache.get(Number(ev.restaurantId!)) : undefined) ??
-          (ev.restaurantId ? `식당 #${ev.restaurantId}` : null);
+          (typeof ev.restaurantId === "number" ? restCache.get(ev.restaurantId) : undefined) ??
+          (ev.restaurantId ? `식당 #${ev.restaurantId}` : "장소 미정");
+
+        // 서버가 participantsCount를 안 주면 0으로 보이는데,
+        // “호스트는 무조건 참여자” 규칙으로 최소 1명 보장
+        const displayCount = Math.max(1, ev.currentParticipants ?? 0);
 
         return {
           ...ev,
           host: { ...ev.host, name: creatorName },
           restaurantName,
+          currentParticipants: displayCount,
+          maxParticipants: ev.maxParticipants ?? DEFAULT_MAX,
           dateLabel: ev.dateLabel ?? toDateLabel(ev.startISO),
           startHHMM: ev.startHHMM ?? toHHMM(ev.startISO),
           endHHMM: ev.endHHMM ?? toHHMM(ev.endISO),
         };
       });
 
-      // ===== 디버그: 최종 결과 요약 =====
-      console.groupCollapsed("%c[events:list] final (render)", "color:#0a0");
-      console.table(withLabels.map((x) => ({
-        id: x.id,
-        title: x.title,
-        hostName: x.host.name,
-        restaurantName: x.restaurantName,
-        time: `${x.dateLabel ?? ""} ${x.startHHMM ?? ""}${x.endHHMM ? "-" + x.endHHMM : ""}`,
-      })));
-      console.groupEnd();
+      // 프론트 검색(서버 search 미지원 대비)
+      const qnorm = q.trim().toLowerCase();
+      const finalList =
+        qnorm.length === 0
+          ? merged
+          : merged.filter(ev => {
+              const hay = [
+                ev.title,
+                ev.description ?? "",
+                ev.host.name ?? "",
+                ev.restaurantName ?? "",
+              ].join(" ").toLowerCase();
+              return hay.includes(qnorm);
+            });
 
-      setEvents(withLabels);
+      setEvents(finalList);
     } catch (e: any) {
       console.error("목록 로드 실패:", e);
       setError(e?.message || "밥약 목록을 불러오지 못했습니다.");
@@ -394,7 +360,7 @@ export default function HomePage() {
 
                   <div className="flex items-center text-sm text-muted-foreground">
                     <Users className="w-4 h-4 mr-1" />
-                    {ev.currentParticipants ?? 0}/{ev.maxParticipants ?? "-"}
+                    {ev.currentParticipants ?? 1}/{ev.maxParticipants ?? DEFAULT_MAX}
                   </div>
                 </div>
               </CardHeader>
@@ -404,7 +370,7 @@ export default function HomePage() {
                   <p className="text-sm text-muted-foreground mb-4 line-clamp-2">{ev.description}</p>
                 )}
 
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
                     <Avatar className="w-6 h-6">
                       <AvatarImage src={ev.host.avatar ?? "/placeholder.svg"} />
@@ -419,6 +385,17 @@ export default function HomePage() {
                     </Badge>
                   )}
                 </div>
+
+                <Button
+                  className="w-full"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    router.push(`/events/${ev.id}`);
+                  }}
+                >
+                  참여하기
+                </Button>
               </CardContent>
             </Card>
           ))}

@@ -1,37 +1,30 @@
 // app/create/page.tsx
 "use client";
 
-import type React from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowLeft, Search } from "lucide-react";
-import { useRouter, useSearchParams } from "next/navigation";
 import { eventAPI } from "@/lib/api";
-
-// 성별 제한 옵션 (UI 전용)
-const genderOptions = [
-  { value: "all", label: "상관없음" },
-  { value: "female", label: "여자만" },
-  { value: "male", label: "남자만" },
-];
 
 export default function CreateEventPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // 폼 상태 (UI 전용 필드 포함)
+  // 쿼리 파라미터(id, name, address 우선)
+  const qpId = searchParams.get("id") ?? searchParams.get("restaurantId") ?? "";
+  const qpName = searchParams.get("name") ?? searchParams.get("restaurant") ?? "";
+  const qpAddress = searchParams.get("address") ?? searchParams.get("location") ?? "";
+
   const [formData, setFormData] = useState({
     title: "",
-    content: "", // ✅ 서버에는 content로 보냄
-    restaurant: searchParams.get("restaurant") || "", // UI 표시용(서버 미전송)
-    location: searchParams.get("location") || "", // UI 표시용(서버 미전송)
-    maxParticipants: 2, // UI 전용
-    genderRestriction: "all", // UI 전용
+    content: "",
+    restaurant: qpName,
+    location: qpAddress,
   });
 
   const [startDate, setStartDate] = useState("");
@@ -41,22 +34,31 @@ export default function CreateEventPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  // 한국시간(+09:00) ISO로 변환
+  useEffect(() => {
+    setFormData((prev) => ({
+      ...prev,
+      restaurant: qpName,
+      location: qpAddress,
+    }));
+  }, [qpId, qpName, qpAddress]);
+
+  // 한국시간(+09:00) ISO 변환
   function toISO(date: string, time: string) {
     return new Date(`${date}T${time}:00+09:00`).toISOString();
   }
 
+  // 폼 제출
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
     if (!startDate || !startTime || !endDate || !endTime) {
       setError("시작/종료 일시를 모두 선택해주세요.");
       return;
     }
 
-    // ✅ 반드시 숫자 restaurantId가 필요(스키마상 NOT NULL)
-    const restaurantId = Number(searchParams.get("restaurantId") || 0);
+    const restaurantId = Number(qpId || 0);
     if (!restaurantId) {
-      setError("식당을 먼저 선택해주세요. (돋보기 아이콘으로 식당을 선택)");
+      setError("식당 ID가 필요합니다. 식당 상세에서 버튼을 눌러 이동해주세요.");
       return;
     }
 
@@ -64,23 +66,19 @@ export default function CreateEventPage() {
     setError("");
 
     try {
-      // ✅ 백엔드 스키마에 맞는 페이로드 (camelCase)
       const payload = {
         title: formData.title,
         content: formData.content,
-        restaurantId,                       // Int (DB의 restaurant_id와 매핑)
+        restaurantId,
         startAt: toISO(startDate, startTime),
-        endAt:   toISO(endDate, endTime),
+        endAt: toISO(endDate, endTime),
       };
 
-      const response = await eventAPI.createEvent(payload);
+      const response: any = await eventAPI.createEvent(payload);
 
-      // 응답 형태가 다양할 수 있으니, 에러만 아니면 성공 처리
-      if (!response || response.error) {
-        throw new Error(response?.message || "생성 실패");
-      }
-
-      router.push("/");
+      // 생성 후 이동(응답에 id 있으면 상세로 이동)
+      const newId = response?.id ?? response?.data?.id;
+      router.push(newId ? `/events/${newId}` : "/");
     } catch (err: any) {
       console.error("밥약 생성 실패:", err);
       setError(err?.message || "밥약 생성에 실패했습니다.");
@@ -152,10 +150,9 @@ export default function CreateEventPage() {
                     <Search className="w-4 h-4" />
                   </Button>
                 </div>
-                {/* 선택된 restaurantId가 없으면 안내 */}
-                {!Number(searchParams.get("restaurantId") || 0) && (
+                {!Number(qpId || 0) && (
                   <p className="text-xs text-muted-foreground mt-1">
-                    * 식당 카드를 눌러 들어간 뒤, “이 식당에서 밥약 만들기” 버튼을 누르면 식당이 연결돼요.
+                    * 식당 상세에서 “이 식당에서 밥약 만들기” 버튼을 눌러야 자동 연결됩니다.
                   </p>
                 )}
               </div>
@@ -168,9 +165,6 @@ export default function CreateEventPage() {
                   value={formData.location}
                   onChange={(e) => setFormData((prev) => ({ ...prev, location: e.target.value }))}
                 />
-                <p className="text-xs text-muted-foreground mt-1">
-                  * 참고용 표시만 합니다. 저장은 되지 않아요(백엔드 컬럼 없음).
-                </p>
               </div>
             </CardContent>
           </Card>
@@ -240,59 +234,14 @@ export default function CreateEventPage() {
             </CardContent>
           </Card>
 
-          {/* 참여자 설정 (UI 전용) */}
-          <Card>
-            <CardHeader>
-              <CardTitle>참여자 설정</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <Label htmlFor="maxParticipants">최대 참여자 수</Label>
-                <Select
-                  value={formData.maxParticipants.toString()}
-                  onValueChange={(value) =>
-                    setFormData((prev) => ({ ...prev, maxParticipants: Number.parseInt(value) }))
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {[2, 3, 4].map((num) => (
-                      <SelectItem key={num} value={num.toString()}>
-                        {num}명
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground mt-1">* 현재 백엔드 저장은 되지 않습니다.</p>
-              </div>
-
-              <div>
-                <Label htmlFor="genderRestriction">성별 제한</Label>
-                <Select
-                  value={formData.genderRestriction}
-                  onValueChange={(value) => setFormData((prev) => ({ ...prev, genderRestriction: value }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {genderOptions.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground mt-1">* 현재 백엔드 저장은 되지 않습니다.</p>
-              </div>
-            </CardContent>
-          </Card>
-
           {/* 버튼 */}
           <div className="flex gap-4">
-            <Button type="button" variant="outline" className="flex-1 bg-transparent" onClick={() => router.back()}>
+            <Button
+              type="button"
+              variant="outline"
+              className="flex-1 bg-transparent"
+              onClick={() => router.back()}
+            >
               취소
             </Button>
             <Button
@@ -305,7 +254,7 @@ export default function CreateEventPage() {
                 !startTime ||
                 !endDate ||
                 !endTime
-              } // 🔁 location은 필수 아님
+              }
             >
               {isSubmitting ? "생성 중..." : "밥약 만들기"}
             </Button>

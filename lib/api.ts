@@ -3,12 +3,13 @@
  * - 코어 유틸은 api.core.ts에서 import
  * - 외부 사용처는 계속 "@/lib/api" 에서 import
  */
-
 import { apiRequest, refreshPOST, getAuthToken, API_BASE_URL } from "./api.core";
 export { apiRequest, refreshPOST, getAuthToken, API_BASE_URL }; // 밖으로도 다시 내보내기
 export type { Profile } from "./api.core";
 import { eventAPI_mutation } from "./api.routes";
-
+const BASE =
+  process.env.NEXT_PUBLIC_API_URL // ✅ .env.local에 있는 키로 맞춤
+  ?? (process.env.PROXY_MODE === "true" ? (process.env.PROXY_PREFIX || "/_be") : "");
 // ─────────────────────────────────────────────────────────────
 // 보조 유틸(도메인 변환)
 // ─────────────────────────────────────────────────────────────
@@ -129,8 +130,40 @@ export const userAPI = {
 // 이벤트
 // ─────────────────────────────────────────────────────────────
 export const eventAPI_read = {
-  createEvent: async (eventData: any) =>
-    apiRequest("/api/events/creation", { method: "POST", body: JSON.stringify(eventData) }),
+  createEvent: async (eventData: any) => {
+    const url = `${BASE}/api/events/creation`;      // ← 절대 URL 사용
+    const payload = JSON.stringify(eventData);
+
+    console.log("[DEBUG][createEvent] 요청 URL:", url);
+    console.log("[DEBUG][createEvent] 요청 바디:", eventData);
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${localStorage.getItem("accessToken") || ""}`,
+      },
+      body: payload,
+      credentials: "include",
+    });
+
+    const text = await res.text();
+    let data: any = text;
+    try { data = JSON.parse(text); } catch {}
+
+    console.log("[DEBUG][createEvent] 응답 상태:", res.status, res.statusText);
+    console.log("[DEBUG][createEvent] 응답 본문:", data);
+
+    if (!res.ok) {
+  // JSON이면 reason/message, 문자열이면 그대로
+  const msg =
+    typeof data === "string"
+      ? data
+      : data?.reason || data?.message || data?.error || "요청 실패";
+  throw new Error(`요청 실패 (HTTP ${res.status}) ${msg}`);
+}
+    return data;
+  },
 
   getEvents: async (params?: { search?: string; page?: number; size?: number }) => {
   const sp = new URLSearchParams();
@@ -158,32 +191,61 @@ export const eventAPI_read = {
 
   getEvent: async (eventId: number | string) => {
   const eid = String(eventId ?? "").trim();
-  if (!eid) return null; // ← 에러 던지지 말고 null 반환
+  if (!eid) return null;
 
   const res = await apiRequest(`/api/events/${encodeURIComponent(eid)}`);
-  const row: any = res?.data ?? res; // { ok, data } 형태도 지원
 
-  const startISO = row?.start_at ?? row?.startAt ?? null;
-  const endISO   = row?.end_at   ?? row?.endAt   ?? null;
+  // ✅ 다양한 래핑(data/item)과 납작/중첩 응답 모두 수용
+  const raw = res?.data?.item ?? res?.data ?? res?.item ?? res;
+
+  // 안전 픽커
+  const pick = (obj: any, ...keys: string[]) => {
+    for (const k of keys) if (obj?.[k] !== undefined) return obj[k];
+    return null;
+  };
+
+  // 시간
+  const startISO = pick(raw, "startAt", "start_at");
+  const endISO   = pick(raw, "endAt", "end_at");
+
+  // 작성자
+  const creator = raw?.creator ?? raw?.user ?? null;
+  const creatorId = pick(creator ?? raw, "id", "creatorId", "userId");
+  const creatorNickname =
+    pick(creator ?? raw, "nickname", "name", "creatorNickname") ?? null;
+
+  // 식당
+  const restaurant = raw?.restaurant ?? null;
+  const restaurantId =
+    pick(restaurant ?? raw, "id", "restaurantId", "restaurant_id");
+  const restaurantName =
+    pick(restaurant ?? raw, "name", "restaurantName") ?? null;
+  const restaurantAddress =
+    pick(restaurant ?? raw, "address", "roadAddress", "restaurantAddress") ?? null;
+
+  // 참가자
+  const participants =
+    Array.isArray(raw?.participants) ? raw.participants : [];
+  const participantsCount =
+    pick(raw, "participantsCount", "participants_count") ??
+    (Array.isArray(participants) ? participants.length : 0);
+
+  const maxParticipants = pick(raw, "maxParticipants", "max_participants");
 
   return {
-    // 화면에서 쓰기 쉬운 형태로 매핑
-    id: row?.id ?? eid,
-    title: row?.title ?? "제목 없음",
-    content: row?.content ?? "",
+    id: raw?.id ?? eid,
+    title: raw?.title ?? "제목 없음",
+    content: raw?.content ?? raw?.description ?? "",
     startISO,
     endISO,
-    restaurantId: row?.restaurant_id ?? row?.restaurantId ?? null,
-    restaurantName: row?.restaurant_name ?? row?.restaurantName ?? null,
-    restaurantAddress: row?.restaurant_address ?? row?.restaurantAddress ?? null,
-    creatorId: row?.creator?.id ?? row?.creator_id ?? null,
-    creatorNickname: row?.creator?.nickname ?? row?.creator?.name ?? null,
-    participants: Array.isArray(row?.participants) ? row.participants : [],
-    participantsCount:
-      row?.participants_count ??
-      row?.participantsCount ??
-      (Array.isArray(row?.participants) ? row.participants.length : 0),
-    maxParticipants: row?.max_participants ?? row?.maxParticipants ?? null,
+    restaurantId,
+    restaurantName,
+    restaurantAddress,
+    creatorId,
+    creatorNickname,
+    participants,
+    participantsCount,
+    maxParticipants,
   };
 },
   
@@ -274,17 +336,29 @@ export const restaurantAPI = {
     const qs = sp.toString();
     return apiRequest(`/api/restaurants/recommends${qs ? `?${qs}` : ""}`);
   },
-  getById: async (id: number) => {
-    // 1차: /api/restaurants/:id 시도
-    try {
-      const r = await apiRequest(`/api/restaurants/${id}`);
-      if (r && typeof r === "object") return r;
-    } catch (_) {}
+  async getById(id: number) {
+    const res = await fetch(`/api/restaurants/${id}`, {
+      method: "GET",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+    });
 
-    // 2차: /api/restaurants?q=... 로 검색 후 id 일치건 1개 골라냄
-    const res = await apiRequest(`/api/restaurants?q=${encodeURIComponent(String(id))}`);
-    const list = Array.isArray(res?.items) ? res.items : Array.isArray(res) ? res : [];
-    return list.find((x: any) => Number(x.id) === Number(id)) || null;
+    const text = await res.text();
+    let data: any = text;
+    try { data = JSON.parse(text); } catch {}
+
+    if (!res.ok) {
+      throw new Error(
+        `식당 조회 실패 (HTTP ${res.status}) ${typeof data === "string" ? data : data?.message || ""}`
+      );
+    }
+
+    // 백엔드 응답이 { ok, data: { id, name, ... } } 또는 { id, name }일 수 있으니 안전하게 파싱
+    const body = (data && typeof data === "object" && "data" in data) ? data.data : data;
+    return {
+      id: Number(body?.id ?? id),
+      name: String(body?.name ?? body?.restaurantName ?? ""),
+    };
   },
 };
 export { /*chatAPI,  notificationAPI,*/ commentAPI,reviewAPI } from "./api.routes";
