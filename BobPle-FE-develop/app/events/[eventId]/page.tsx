@@ -1,6 +1,6 @@
 // app/events/[id]/page.tsx
 "use client";
-
+export const runtime = 'edge';
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
