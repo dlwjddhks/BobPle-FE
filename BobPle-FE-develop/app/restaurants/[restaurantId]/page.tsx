@@ -1,5 +1,6 @@
 "use client";
 export const runtime = 'edge';
+export const dynamic = "force-dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
