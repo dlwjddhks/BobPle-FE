@@ -1,6 +1,6 @@
 // app/chats/[eventId]/page.tsx
 "use client";
-
+export const runtime = 'edge'
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Card } from "@/components/ui/card";
